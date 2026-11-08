@@ -1,0 +1,8 @@
+{
+  "moonraker_url": "http://localhost:7125",
+  "port": 8420,
+  "public_url": "",
+  "data_dir": "~/sample-identification-data",
+  "poll_seconds": 30,
+  "initial_import_count": 10
+}

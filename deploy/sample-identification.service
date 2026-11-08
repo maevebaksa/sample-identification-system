@@ -1,0 +1,15 @@
+[Unit]
+Description=Sample Identification System (Mainsail/Moonraker companion)
+After=network-online.target moonraker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/.venv/bin/python run.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

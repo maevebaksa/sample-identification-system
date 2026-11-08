@@ -1,0 +1,4 @@
+flask>=3.0
+requests>=2.31
+segno>=1.6
+waitress>=3.0
