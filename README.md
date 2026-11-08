@@ -36,10 +36,18 @@ python run.py            # reads ./config.json if present
 
 ## Run with Docker
 
+A prebuilt multi-arch image (amd64, arm64, armv7) is published to GitHub Container Registry on every push to `main`:
+
+```bash
+docker run -d --name sample-identification-system --restart unless-stopped   -p 8420:8420 -v sis-data:/data ghcr.io/maevebaksa/sample-identification-system:latest
+```
+
+Or with Compose (pulls the prebuilt image; add `--build` to build from source instead):
+
 ```bash
 git clone https://github.com/maevebaksa/sample-identification-system.git
 cd sample-identification-system
-docker compose up -d --build
+docker compose up -d
 ```
 
 Open `http://<docker-host>:8420`, go to **Printers** and add your printers by IP or hostname

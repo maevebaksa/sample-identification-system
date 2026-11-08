@@ -1,5 +1,6 @@
 services:
   sample-identification-system:
+    image: ghcr.io/maevebaksa/sample-identification-system:latest   # prebuilt; or `docker compose up -d --build` to build locally
     build: .
     container_name: sample-identification-system
     restart: unless-stopped
