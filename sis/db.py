@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS samples (
     moonraker_status TEXT,
     start_time REAL, end_time REAL,
     print_duration REAL, total_duration REAL, filament_used REAL,
+    model TEXT NOT NULL DEFAULT '',            -- source model (STL/3MF) name, auto-detected or edited
+    model_key TEXT,                            -- normalised model name used to group samples
     title TEXT DEFAULT '',
     notes TEXT DEFAULT '',
     tags TEXT DEFAULT '',
@@ -56,9 +58,12 @@ class DB:
             if "archived" not in cols:   # migrate databases created by v0.1.0
                 self.conn.execute("ALTER TABLE samples ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
                 self.conn.commit()
-            if "printer_id" not in cols:   # migrate single-printer databases
-                self.conn.execute("ALTER TABLE samples ADD COLUMN printer_id INTEGER")
-                self.conn.commit()
+            for col, ddl in (("printer_id", "INTEGER"),               # single-printer databases
+                             ("model", "TEXT NOT NULL DEFAULT ''"),    # source model (STL) name
+                             ("model_key", "TEXT")):                   # normalised, for grouping
+                if col not in cols:
+                    self.conn.execute(f"ALTER TABLE samples ADD COLUMN {col} {ddl}")
+                    self.conn.commit()
 
     def q(self, sql, args=()):
         with self.lock:

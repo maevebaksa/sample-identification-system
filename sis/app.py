@@ -10,6 +10,7 @@ from flask import Flask, Response, abort, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 from .moonraker import Moonraker, MoonrakerError
+from .gcode_meta import normalize_model
 from .service import Service, normalize_url
 
 RESULTS = ("unrated", "success", "fail")
@@ -29,7 +30,7 @@ KEY_SETTINGS = [
     "meta.estimated_time", "meta.filament_total", "meta.filament_name",
 ]
 
-CORE_COLS = ["sample", "printer", "result", "title", "tags", "notes", "filename", "reprint_of", "photos",
+CORE_COLS = ["sample", "model", "printer", "result", "title", "tags", "notes", "filename", "reprint_of", "photos",
              "moonraker_status", "start_time", "print_minutes", "filament_used_mm", "gcode_archive"]
 
 
@@ -101,6 +102,9 @@ def create_app(cfg, service=None):
             if body["result"] not in RESULTS:
                 return err("result must be one of " + ", ".join(RESULTS))
             fields["result"] = body["result"]
+        if "model" in body:
+            model = str(body["model"]).strip()[:300]
+            fields["model"], fields["model_key"] = model, normalize_model(model)
         if "archived" in body:
             fields["archived"] = 1 if body["archived"] else 0
         for k in ("title", "notes", "tags"):
@@ -108,6 +112,19 @@ def create_app(cfg, service=None):
                 fields[k] = str(body[k])[:5000]
         svc.db.update_sample(sid, **fields)
         return jsonify(svc.db.get_sample(sid))
+
+    @app.get("/api/samples/<int:sid>/related")
+    def related(sid):
+        """Other samples made from the same source model (STL/3MF)."""
+        s = svc.db.get_sample(sid)
+        if not s:
+            abort(404)
+        if not s["model_key"]:
+            return jsonify([])
+        return jsonify(svc.db.q(
+            "SELECT s.id, s.result, s.archived, s.title, s.start_time, s.model, s.reprint_of,"
+            " (SELECT name FROM printers p WHERE p.id=s.printer_id) AS printer_name"
+            " FROM samples s WHERE s.model_key=? AND s.id<>? ORDER BY s.id", (s["model_key"], sid)))
 
     @app.post("/api/samples/archive")
     def bulk_archive():
@@ -277,7 +294,7 @@ def create_app(cfg, service=None):
         rows = []
         for s in ss:
             row = {
-                "sample": s["id"], "printer": s["printer_name"] or "", "result": s["result"], "title": s["title"], "tags": s["tags"],
+                "sample": s["id"], "model": s["model"], "printer": s["printer_name"] or "", "result": s["result"], "title": s["title"], "tags": s["tags"],
                 "notes": s["notes"], "filename": s["filename"], "reprint_of": s["reprint_of"] or "",
                 "photos": len(s["photos"]), "moonraker_status": s["moonraker_status"],
                 "start_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(s["start_time"]))

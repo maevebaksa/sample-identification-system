@@ -3,7 +3,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const view = $("#view");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const selected = new Set();
-let filters = { q: "", result: "", printer: "" };
+let filters = { q: "", result: "", printer: "", model: "" };
 let info = {};
 let printers = [];
 
@@ -66,12 +66,19 @@ async function listView(archived = false) {
   const all = await api("/samples");
   const hideUnrated = !archived && store.get("hideUnrated", "0") === "1";
   const nUnrated = all.filter(s => !s.archived && s.result === "unrated").length;
+  // [key, display name, count] for models that appear in this list (active or archived), most-used first.
+  const mc = new Map();
+  all.filter(s => !!s.archived === archived && s.model_key).forEach(s => {
+    const e = mc.get(s.model_key) || [s.model_key, s.model || s.model_key, 0]; e[2]++; mc.set(s.model_key, e);
+  });
+  const models = [...mc.values()].sort((a, b) => b[2] - a[2] || a[1].localeCompare(b[1]));
   const rows = all.filter(s =>
     !!s.archived === archived &&
     !(hideUnrated && s.result === "unrated") &&
     (!filters.printer || String(s.printer_id) === filters.printer) &&
+    (!filters.model || s.model_key === filters.model) &&
     (!filters.result || s.result === filters.result) &&
-    (!filters.q || [s.id, s.title, s.filename, s.notes, s.tags].join(" ").toLowerCase().includes(filters.q.toLowerCase())));
+    (!filters.q || [s.id, s.title, s.model, s.filename, s.notes, s.tags].join(" ").toLowerCase().includes(filters.q.toLowerCase())));
   view.innerHTML = `
     <h1>${archived ? "Archive" : "Samples"}</h1>
     ${archived ? `<p class="muted">Archived samples are hidden from the main list and from default exports. Their gcode and photos are kept.</p>` : ""}
@@ -79,6 +86,7 @@ async function listView(archived = false) {
       <input type="search" id="q" placeholder="Search number, name, notes, tags…" value="${esc(filters.q)}">
       <select id="rf"><option value="">All results</option>
         ${["unrated", "success", "fail"].map(r => `<option ${filters.result === r ? "selected" : ""}>${r}</option>`).join("")}</select>
+      ${models.length > 1 ? `<select id="mf"><option value="">All models</option>${models.map(([k, name, n]) => `<option value="${esc(k)}" ${filters.model === k ? "selected" : ""}>${esc(name)} (${n})</option>`).join("")}</select>` : ""}
       ${printers.length > 1 ? `<select id="pf"><option value="">All printers</option>${printers.map(p => `<option value="${p.id}" ${filters.printer === String(p.id) ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>` : ""}
       ${archived ? "" : `<label class="muted"><input type="checkbox" id="hu" ${hideUnrated ? "checked" : ""}> Hide unrated</label>`}
       <span class="grow"></span>
@@ -96,7 +104,7 @@ async function listView(archived = false) {
           <td class="num">${s.id}</td>
           <td>${s.thumb ? `<img class="thumb" loading="lazy" src="/photos/${esc(s.thumb)}">` : ""}</td>
           <td>${esc(s.title || s.filename.split("/").pop())}
-            <div class="muted">${esc(s.tags)}${s.reprint_of ? ` · reprint of #${s.reprint_of}` : ""}${s.gcode_path ? "" : ' · <span class="b-warn">gcode not archived</span>'}</div></td>
+            <div class="muted">${s.model ? "▣ " + esc(s.model) : ""}${s.tags ? " · " + esc(s.tags) : ""}${s.reprint_of ? ` · reprint of #${s.reprint_of}` : ""}${s.gcode_path ? "" : ' · <span class="b-warn">gcode not archived</span>'}</div></td>
           <td>${badge(s.result)}${s.moonraker_status && s.moonraker_status !== "completed" ? `<div class="muted">${esc(s.moonraker_status)}</div>` : ""}</td>
           ${printers.length > 1 ? `<td class="hide-m muted">${esc(s.printer_name)}</td>` : ""}
           <td class="hide-m muted">${fmtDate(s.start_time)}</td>
@@ -107,6 +115,7 @@ async function listView(archived = false) {
   upd();
   $("#q").oninput = e => { filters.q = e.target.value; const p = e.target.selectionStart; listView(archived).then(() => { const q = $("#q"); q.focus(); q.setSelectionRange(p, p); }); };
   $("#rf").onchange = e => { filters.result = e.target.value; listView(archived); };
+  if ($("#mf")) $("#mf").onchange = e => { filters.model = e.target.value; listView(archived); };
   if ($("#pf")) $("#pf").onchange = e => { filters.printer = e.target.value; listView(archived); };
   if ($("#hu")) $("#hu").onchange = e => { store.set("hideUnrated", e.target.checked ? "1" : "0"); listView(archived); };
   $("#arc").onclick = async () => {
@@ -147,7 +156,7 @@ function exportDialog() {
 
 // ---------------------------------------------------------------- detail
 async function detailView(id) {
-  const s = await api("/samples/" + id);
+  const [s, rel] = await Promise.all([api("/samples/" + id), api(`/samples/${id}/related`)]);
   const keys = Object.keys(s.settings).sort();
   view.innerHTML = `
     <div class="bar"><a href="#/" class="btn ghost">← All samples</a><span class="grow"></span>
@@ -162,6 +171,7 @@ async function detailView(id) {
           <div class="resultbtns">
             <button class="s ${s.result === "success" ? "sel" : ""}" data-r="success">✓ Success</button>
             <button class="f ${s.result === "fail" ? "sel" : ""}" data-r="fail">✗ Failed</button></div>
+          <p><input id="model" placeholder="Model / STL name (groups samples of the same part)" value="${esc(s.model)}"></p>
           <p><input id="title" placeholder="Title / what was being tested" value="${esc(s.title)}"></p>
           <p><input id="tags" placeholder="Tags (comma separated)" value="${esc(s.tags)}"></p>
           <p><textarea id="notes" rows="4" placeholder="Notes: what you saw, what to change next…">${esc(s.notes)}</textarea></p>
@@ -182,6 +192,11 @@ async function detailView(id) {
             : `<p class="b-warn">The gcode could not be archived: ${esc(s.archive_error || "unknown")}</p>`}
           <div class="qr row" style="align-items:center"><span style="flex:none" id="qr"></span>
             <span class="muted">Scan on your phone to open this sample and add photos. <a href="/labels?ids=${id}" target="_blank">Print label</a></span></div></div>
+        <div class="card"><h2>Same model${s.model ? ": " + esc(s.model) : ""} (${rel.length})</h2>
+          ${rel.length ? `<table>${rel.map(r => `<tr class="click" data-rel="${r.id}"><td class="num">#${r.id}</td><td>${badge(r.result)}</td>
+              <td>${esc(r.title)}<div class="muted">${esc(r.printer_name || "")} ${fmtDate(r.start_time)}${r.archived ? " · archived" : ""}${r.reprint_of ? " · same gcode as #" + r.reprint_of : ""}</div></td></tr>`).join("")}</table>
+            <p><a class="btn primary" href="#/compare/${[id, ...rel.filter(r => !r.archived).map(r => r.id)].sort((a, b) => a - b).join(",")}">Compare all ${1 + rel.filter(r => !r.archived).length} (this + same model)</a></p>`
+            : `<p class="muted">No other samples of this model yet. Print it again with different settings and it will show up here automatically. If the name was guessed wrong, edit the Model field.</p>`}</div>
         <div class="card"><h2>Print stats</h2><table class="kv">
           <tr><td>Print time</td><td>${fmtDur(s.print_duration)}</td></tr>
           <tr><td>Filament used</td><td>${s.filament_used ? (s.filament_used / 1000).toFixed(2) + " m" : ""}</td></tr></table></div>
@@ -196,14 +211,15 @@ async function detailView(id) {
       <p><button id="archv">${s.archived ? "Restore from archive" : "Move to archive"}</button>
       <button id="del" class="ghost bad">Delete sample record</button>
       <span class="muted">(archived gcode stays on disk)</span></p></div>`;
+  view.querySelectorAll("[data-rel]").forEach(tr => tr.onclick = () => location.hash = "#/sample/" + tr.dataset.rel);
   fetch(`/api/samples/${id}/qr.svg`).then(r => r.text()).then(t => $("#qr").innerHTML = `<span class="qr">${t}</span>`);
   view.querySelectorAll("[data-r]").forEach(b => b.onclick = async () => {
     await api("/samples/" + id, { method: "PATCH", body: { result: s.result === b.dataset.r ? "unrated" : b.dataset.r } });
     detailView(id);
   });
   $("#save").onclick = async () => {
-    await api("/samples/" + id, { method: "PATCH", body: { title: $("#title").value, tags: $("#tags").value, notes: $("#notes").value } });
-    toast("Saved");
+    await api("/samples/" + id, { method: "PATCH", body: { model: $("#model").value, title: $("#title").value, tags: $("#tags").value, notes: $("#notes").value } });
+    toast("Saved"); detailView(id);
   };
   const reprint = $("#reprint");
   if (reprint) reprint.onclick = async () => {
@@ -273,6 +289,7 @@ async function compareView(ids) {
         <thead><tr><th>Setting</th>${d.samples.map(s => `<th><a href="#/sample/${s.id}">#${s.id}</a> ${badge(s.result)}</th>`).join("")}</tr></thead>
         <tbody>
           <tr><td class="muted">Photo</td>${d.samples.map(s => `<td>${s.photos.length ? `<a href="#/sample/${s.id}"><img class="thumb" style="width:90px;height:90px" src="/photos/${esc(s.photos[s.photos.length - 1].filename)}"></a>` : ""}</td>`).join("")}</tr>
+          <tr><td class="muted">Model</td>${d.samples.map(s => `<td>${esc(s.model)}</td>`).join("")}</tr>
           <tr><td class="muted">Notes</td>${d.samples.map(s => `<td>${esc(s.notes)}</td>`).join("")}</tr>
           ${(() => {
             const byKey = new Map(rows.map(r => [r.key, r]));

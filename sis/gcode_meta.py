@@ -123,6 +123,69 @@ def _derive_from_gcode(head):
     return out
 
 
+# ----------------------------------------------------------------- model name
+# Slicers that "label objects" write the source model's name into the gcode:
+#   PrusaSlicer/Orca/Bambu: "; printing object cube.stl id:0 copy 0"
+#   Cura:                   ";MESH:cube.stl"
+#   Klipper exclude_object: "EXCLUDE_OBJECT_DEFINE NAME=cube_stl_id_0_copy_0 ..."
+_OBJ_PATTERNS = [
+    re.compile(r"^; ?printing object (.+?) id:\d+", re.M),
+    re.compile(r"^;MESH:(?!NONMESH)(.+?)\s*$", re.M),
+    re.compile(r"^EXCLUDE_OBJECT_DEFINE NAME=(\S+?)(?:_id_\d+_copy_\d+)?(?:\s|$)", re.M),
+]
+MODEL_SCAN_BYTES = 2 * 1024 * 1024
+_EXT = re.compile(r"[._](stl|3mf|obj|step|stp|amf)$|\.(gcode|gco|bgcode)$", re.I)
+_FNAME_NOISE = [
+    re.compile(r"^\d+(\.\d+)?mm$", re.I),               # 0.2mm
+    re.compile(r"^\d+h(\d+m)?$|^\d+m$", re.I),          # 1h5m, 45m
+    re.compile(r"^(pla|petg|abs|asa|tpu|pc|pa|pet|pva|hips|pla\+|pa12|pa6|cf|gf|plus)$", re.I),
+    re.compile(r"^\d+(\.\d+)?g$", re.I),                # 12g
+]
+
+
+def normalize_model(name):
+    """Canonical key so 'Cube.STL', 'cube.stl' and 'cube' group together."""
+    n = (name or "").replace("\\", "/").split("/")[-1].strip()
+    n = _EXT.sub("", n)
+    return re.sub(r"\s+", " ", n).strip().lower()
+
+
+def extract_model_names(path):
+    """Unique source-model names found in the gcode, in order of appearance."""
+    with open(path, "rb") as f:
+        text = f.read(MODEL_SCAN_BYTES).decode("utf-8", "ignore")
+    for pat in _OBJ_PATTERNS:
+        names = []
+        for m in pat.finditer(text):
+            n = m.group(1).strip()
+            if n and n not in names:
+                names.append(n)
+        if names:
+            return names
+    return []
+
+
+def model_from_filename(filename):
+    """Guess the model name from a slicer-style filename by dropping layer height, filament and time tokens."""
+    base = _EXT.sub("", filename.replace("\\", "/").split("/")[-1])
+    tokens = [t for t in re.split(r"[_\s]+", base) if t]
+    keep = [t for t in tokens if not any(p.match(t) for p in _FNAME_NOISE)]
+    return " ".join(keep) if keep else base
+
+
+def detect_model(path, filename):
+    """(display name, grouping key) for a sample."""
+    names = []
+    try:
+        names = extract_model_names(path) if path else []
+    except OSError:
+        pass
+    if not names:
+        names = [model_from_filename(filename)]
+    keys = sorted({normalize_model(n) for n in names})
+    return ", ".join(names), "+".join(keys)
+
+
 _SKIP_META = {"thumbnails", "filename", "modified", "job_id", "uuid", "gcode_images"}
 
 

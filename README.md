@@ -10,6 +10,7 @@ A companion app for **Mainsail + Moonraker** that keeps a permanent record of yo
 - **Success / fail**, title, tags and notes per sample.
 - **Archive** – hide unrated/old samples you no longer have (restorable, excluded from default exports).
 - **Grouped settings** – temperatures, speeds, infill, walls, cooling, retraction, etc. instead of one long list.
+- **Same-model tracking** – the source model (STL/3MF) is read from the gcode (PrusaSlicer/Orca/Bambu "label objects", Cura `;MESH:`, Klipper `EXCLUDE_OBJECT`), falling back to the filename. Samples of the same model are grouped: filter the list by model, or open a sample and hit *Compare all* to line up every attempt at that part. The name is editable if it was guessed wrong.
 - **Compare** any number of samples side by side, differing settings highlighted.
 - **Export** CSV (results + key settings, or every setting) or full JSON.
 - **Phone photos** – scan the QR code (or open the sample on your phone) and tap *Take photo*.

@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .db import DB
-from .gcode_meta import flatten_moonraker_metadata, parse_gcode_settings
+from .gcode_meta import detect_model, flatten_moonraker_metadata, parse_gcode_settings
 from .moonraker import Moonraker, MoonrakerError
 
 log = logging.getLogger("sis")
@@ -50,6 +50,7 @@ class Service:
         self._locks = {}
         self.last_sync = {"time": None, "error": None, "new": 0}
         self._seed_default_printer()
+        self._backfill_models()
 
     # --------------------------------------------------------------- printers
     def _seed_default_printer(self):
@@ -65,6 +66,13 @@ class Service:
         # Samples from the single-printer version belong to the first printer.
         self.db.x("UPDATE samples SET job_id = ? || ':' || job_id, printer_id = ? WHERE printer_id IS NULL",
                   (pid, pid))
+
+    def _backfill_models(self):
+        """Samples created before model tracking existed: work out their model now."""
+        for r in self.db.q("SELECT id, filename, gcode_path FROM samples WHERE model_key IS NULL"):
+            path = self.gcode_dir / r["gcode_path"] if r["gcode_path"] else None
+            model, key = detect_model(path if path and path.is_file() else None, r["filename"])
+            self.db.update_sample(r["id"], model=model, model_key=key)
 
     def client(self, pid):
         p = self.db.get_printer(pid)
@@ -132,8 +140,9 @@ class Service:
 
     def _import_job(self, p, mr, job):
         settings = flatten_moonraker_metadata(job.get("metadata"))
+        model, model_key = detect_model(None, job["filename"])
         sid = self.db.add_sample(
-            printer_id=p["id"], job_id=f"{p['id']}:{job['job_id']}", filename=job["filename"],
+            model=model, model_key=model_key, printer_id=p["id"], job_id=f"{p['id']}:{job['job_id']}", filename=job["filename"],
             moonraker_status=job.get("status"),
             start_time=job.get("start_time"), end_time=job.get("end_time"),
             print_duration=job.get("print_duration"), total_duration=job.get("total_duration"),
@@ -168,7 +177,9 @@ class Service:
                 settings.update(flatten_moonraker_metadata(mr.file_metadata(filename)))
             except MoonrakerError:
                 pass
+        model, model_key = detect_model(self.gcode_dir / rel, filename)
         self.db.update_sample(sid, gcode_path=rel, gcode_sha256=digest, archive_error=None,
+                              model=model, model_key=model_key,
                               reprint_of=dup["id"] if dup else None,
                               settings=json.dumps(settings))
 
