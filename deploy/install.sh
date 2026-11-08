@@ -11,8 +11,9 @@ else
   # No python3-venv and (on retired Debian releases) no working apt: bootstrap pip ourselves.
   echo "python3-venv not available; creating venv without pip and fetching pip directly..."
   python3 -m venv --without-pip "$DIR/.venv"
-  curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$DIR/.venv/get-pip.py" \
-    || curl -fsSL https://bootstrap.pypa.io/pip/3.9/get-pip.py -o "$DIR/.venv/get-pip.py"
+  PYV="$("$DIR/.venv/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+  curl -fsSL "https://bootstrap.pypa.io/pip/$PYV/get-pip.py" -o "$DIR/.venv/get-pip.py" \
+    || curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$DIR/.venv/get-pip.py"
   "$DIR/.venv/bin/python" "$DIR/.venv/get-pip.py" -q
   rm -f "$DIR/.venv/get-pip.py"
 fi
