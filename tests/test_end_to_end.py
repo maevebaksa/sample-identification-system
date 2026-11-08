@@ -72,7 +72,7 @@ def test_full_flow(env):
 
     # reprint existing file -> just starts it
     r = c.post("/api/samples/1/reprint").json
-    assert r == {"started": "a.gcode", "uploaded": False}
+    assert r == {"started": "a.gcode", "uploaded": False, "printer": "Printer"}
 
     # delete from Moonraker, then reprint -> restored from archive
     (tmp / "mr_gcodes" / "sub" / "b.gcode").unlink()
@@ -129,3 +129,79 @@ def test_archive(env):
     assert c.patch("/api/samples/1", json={"archived": True}).json["archived"] == 1
     c.post("/api/sync")                                                  # archived stays archived, not re-imported
     assert len(c.get("/api/samples").json) == 2
+
+
+def _second_printer(tmp_path):
+    mock2 = make_mock(tmp_path / "mr2_gcodes")
+    srv = make_server("127.0.0.1", 0, mock2, threaded=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return mock2, srv
+
+
+def test_multiple_printers(env):
+    mock, app, c, tmp = env
+    mock2, srv2 = _second_printer(tmp)
+    try:
+        t = time.time()
+        mock.add_job("1", "a.gcode", GCODE_A, start=t - 100)
+        mock2.add_job("1", "x.gcode", GCODE_B, start=t - 50)      # same Moonraker job id, other printer
+        url2 = f"127.0.0.1:{srv2.port}"                            # scheme optional
+
+        assert c.post("/api/printers/test", json={"url": url2}).json["ok"]
+        assert c.post("/api/printers/test", json={"url": "http://127.0.0.1:1"}).status_code == 502
+
+        added = c.post("/api/printers", json={"name": "Voron", "url": url2}).json
+        assert added["name"] == "Voron" and added["sample_count"] == 1 and not added["last_error"]
+        c.post("/api/sync")
+        rows = {r["id"]: r for r in c.get("/api/samples").json}
+        assert len(rows) == 2 and {r["printer_name"] for r in rows.values()} == {"Printer", "Voron"}
+
+        # print sample 1 (from printer 1) on the Voron: file is missing there, so it gets uploaded
+        own = next(x["id"] for x in c.get("/api/samples").json if x["printer_name"] == "Printer")
+        r = c.post(f"/api/samples/{own}/reprint", json={"printer_id": added["id"]}).json
+        assert r["printer"] == "Voron" and r["uploaded"] and mock2.started[-1] == "a.gcode"
+        assert not mock.started
+
+        assert c.delete(f"/api/printers/{added['id']}").status_code == 409      # has samples
+        c.patch(f"/api/printers/{added['id']}", json={"enabled": False})
+        mock2.add_job("2", "y.gcode", GCODE_A, start=time.time())
+        c.post("/api/sync")
+        assert len(c.get("/api/samples").json) == 2                              # disabled: not polled
+        assert "api_key" not in c.get("/api/printers").json[0]
+    finally:
+        srv2.shutdown()
+
+
+def test_unreachable_printer_does_not_block_others(env):
+    mock, app, c, tmp = env
+    mock.add_job("1", "a.gcode", GCODE_A)
+    c.post("/api/printers", json={"name": "Dead", "url": "http://127.0.0.1:1"})
+    res = c.post("/api/sync").json
+    assert "Dead" in res["error"]
+    assert len(c.get("/api/samples").json) == 1
+    assert [p["last_error"] for p in c.get("/api/printers").json][1]
+
+
+def test_upgrade_from_single_printer_db(tmp_path):
+    import sqlite3
+    from sis.service import Service
+    data = tmp_path / "data"
+    data.mkdir()
+    con = sqlite3.connect(data / "samples.db")
+    con.executescript("""CREATE TABLE samples (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT UNIQUE,
+        filename TEXT NOT NULL, gcode_path TEXT, gcode_sha256 TEXT, reprint_of INTEGER,
+        result TEXT NOT NULL DEFAULT 'unrated', moonraker_status TEXT, start_time REAL, end_time REAL,
+        print_duration REAL, total_duration REAL, filament_used REAL, title TEXT DEFAULT '',
+        notes TEXT DEFAULT '', tags TEXT DEFAULT '', settings TEXT NOT NULL DEFAULT '{}',
+        archive_error TEXT, created_at REAL NOT NULL);
+        CREATE TABLE photos (id INTEGER PRIMARY KEY AUTOINCREMENT, sample_id INTEGER, filename TEXT, created_at REAL);
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO samples(job_id, filename, created_at) VALUES('000042', 'old.gcode', 1);
+        INSERT INTO meta VALUES('baseline_time', '123.0');""")
+    con.commit()
+    con.close()
+    svc = Service({"moonraker_url": "http://printer.local:7125", "moonraker_api_key": "", "public_url": "",
+                   "data_dir": data, "poll_seconds": 30, "initial_import_count": 10})
+    s = svc.db.get_sample(1)
+    assert s["printer_id"] == 1 and s["job_id"] == "1:000042" and s["printer_name"] == "Printer"
+    assert svc.db.get_printer(1)["baseline_time"] == 123.0

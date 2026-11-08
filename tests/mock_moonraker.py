@@ -12,6 +12,10 @@ def make_mock(gcode_dir: Path):
     app.started = []
     app.state = "standby"
 
+    @app.get("/server/info")
+    def info():
+        return jsonify(result={"klippy_state": "ready", "moonraker_version": "v0.9.3-mock"})
+
     @app.get("/server/history/list")
     def hist():
         return jsonify(result={"count": len(app.jobs), "jobs": list(reversed(app.jobs))})

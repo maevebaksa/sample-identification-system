@@ -3,7 +3,8 @@
 A companion app for **Mainsail + Moonraker** that keeps a permanent record of your print tests.
 
 - **Auto-import** – finished prints are pulled from Moonraker's job history; each gets a permanent **sample number** to write on the part.
-- **Settings capture** – the slicer config embedded in the gcode (PrusaSlicer, SuperSlicer, OrcaSlicer, Bambu Studio; best-effort Cura) plus Moonraker's file metadata.
+- **Multiple printers** – add any Moonraker printer on your network (Printers page); all their prints share one sample list, and you can reprint a sample on *any* printer.
+- **Settings capture** – the slicer config embedded in the gcode (PrusaSlicer, SuperSlicer, OrcaSlicer, Bambu Studio, **Cura**) plus Moonraker's file metadata and the temperatures commanded by the start G-code.
 - **Safe copy** – every gcode is copied to `data_dir/gcodes/`, so deleting it from Mainsail loses nothing.
 - **One-tap reprint** – re-uploads the archived file if it's gone from Mainsail, then starts it.
 - **Success / fail**, title, tags and notes per sample.
@@ -32,11 +33,30 @@ pip install -r requirements.txt
 python run.py            # reads ./config.json if present
 ```
 
+## Run with Docker
+
+```bash
+git clone https://github.com/maevebaksa/sample-identification-system.git
+cd sample-identification-system
+docker compose up -d --build
+```
+
+Open `http://<docker-host>:8420`, go to **Printers** and add your printers by IP or hostname
+(`http://192.168.1.50:7125`, or just `http://voron.local`). Data (database, gcode archive, photos)
+is stored in `./data` next to the compose file.
+
+Notes:
+- Inside a container `localhost` is the container itself, so always use the printer's LAN address.
+- Moonraker must allow the Docker host: add its IP (or the whole subnet, e.g. `192.168.1.0/24`) to
+  `trusted_clients` in each printer's `moonraker.conf`, or give the printer an API key on the Printers page.
+- Optional env vars: `SIS_MOONRAKER_URL` (pre-seed the first printer), `SIS_PUBLIC_URL` (address used in QR codes),
+  `SIS_POLL_SECONDS`.
+
 ## Configuration (`config.json`, see `config.example.json`)
 
 | key | default | meaning |
 |---|---|---|
-| `moonraker_url` | `http://localhost:7125` | Moonraker API |
+| `moonraker_url` | `http://localhost:7125` | first printer, created on first run (more can be added in the UI; leave empty to add them all in the UI) |
 | `moonraker_api_key` | `""` | only if Moonraker requires one |
 | `port` / `host` | `8420` / `0.0.0.0` | web UI |
 | `public_url` | `""` | address phones should use in QR codes, e.g. `http://voron.local:8420` |
@@ -65,7 +85,16 @@ Mainsail supports custom sidebar entries via `.theme/navi.json` in your printer'
 
 Printing the same gcode again creates a new sample number automatically marked "reprint of #N".
 
+## Cura notes
+
+Cura only writes the settings you *changed* from the base profile into the gcode, so those (plus the profile name,
+print time, layer height and the temperatures in the start G-code) are what you'll see. For the most complete
+records use a slicer that embeds its whole config (PrusaSlicer/Orca/Bambu), or change the settings you care about
+away from the profile defaults in Cura so they get recorded.
+
 ## Notes & limits
+
+- Printers are polled in parallel; one being offline doesn't block the others. A printer with samples is disabled rather than deleted.
 
 - Deleting a sample *record* never deletes the archived gcode.
 - If a gcode was already deleted from Mainsail before it could be archived, the sample is still created (with Moonraker's metadata) but is flagged "gcode not archived" and can't be reprinted.

@@ -4,9 +4,20 @@ import threading
 import time
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS printers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,                         -- Moonraker base URL
+    api_key TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    baseline_time REAL,                        -- only prints started after this are imported
+    last_sync REAL, last_error TEXT, last_new INTEGER DEFAULT 0,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS samples (
     id INTEGER PRIMARY KEY AUTOINCREMENT,      -- the sample number you write on the part
-    job_id TEXT UNIQUE,                        -- Moonraker history job id
+    printer_id INTEGER,                        -- which printer made it
+    job_id TEXT UNIQUE,                        -- '<printer_id>:<Moonraker job id>'
     filename TEXT NOT NULL,                    -- path inside Moonraker's gcodes root
     gcode_path TEXT,                           -- archived copy, relative to data_dir/gcodes
     gcode_sha256 TEXT,
@@ -45,6 +56,9 @@ class DB:
             if "archived" not in cols:   # migrate databases created by v0.1.0
                 self.conn.execute("ALTER TABLE samples ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
                 self.conn.commit()
+            if "printer_id" not in cols:   # migrate single-printer databases
+                self.conn.execute("ALTER TABLE samples ADD COLUMN printer_id INTEGER")
+                self.conn.commit()
 
     def q(self, sql, args=()):
         with self.lock:
@@ -81,7 +95,8 @@ class DB:
         self.x(f"UPDATE samples SET {sets} WHERE id=?", (*f.values(), sid))
 
     def get_sample(self, sid):
-        s = self.one("SELECT * FROM samples WHERE id=?", (sid,))
+        s = self.one("SELECT s.*, (SELECT name FROM printers p WHERE p.id=s.printer_id) AS printer_name "
+                     "FROM samples s WHERE s.id=?", (sid,))
         if s:
             s["settings"] = json.loads(s["settings"] or "{}")
             s["photos"] = self.q("SELECT * FROM photos WHERE sample_id=? ORDER BY id", (sid,))
@@ -89,9 +104,26 @@ class DB:
 
     def list_samples(self):
         rows = self.q(
-            "SELECT s.*, (SELECT COUNT(*) FROM photos p WHERE p.sample_id=s.id) AS photo_count,"
+            "SELECT s.*, (SELECT name FROM printers p WHERE p.id=s.printer_id) AS printer_name,"
+            " (SELECT COUNT(*) FROM photos p WHERE p.sample_id=s.id) AS photo_count,"
             " (SELECT filename FROM photos p WHERE p.sample_id=s.id ORDER BY id DESC LIMIT 1) AS thumb"
             " FROM samples s ORDER BY s.id DESC")
         for r in rows:
             r.pop("settings", None)
         return rows
+
+    # --- printers ----------------------------------------------------------
+    def list_printers(self):
+        return self.q("SELECT p.*, (SELECT COUNT(*) FROM samples s WHERE s.printer_id=p.id) AS sample_count "
+                      "FROM printers p ORDER BY p.id")
+
+    def get_printer(self, pid):
+        return self.one("SELECT * FROM printers WHERE id=?", (pid,))
+
+    def add_printer(self, name, url, api_key="", baseline_time=None):
+        return self.x("INSERT INTO printers(name,url,api_key,baseline_time,created_at) VALUES(?,?,?,?,?)",
+                      (name, url, api_key, baseline_time, time.time()))
+
+    def update_printer(self, pid, **f):
+        if f:
+            self.x(f"UPDATE printers SET {','.join(k + '=?' for k in f)} WHERE id=?", (*f.values(), pid))

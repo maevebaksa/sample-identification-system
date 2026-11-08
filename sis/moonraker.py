@@ -31,6 +31,9 @@ class Moonraker:
             raise MoonrakerError(f"Moonraker {r.status_code}: {msg}")
         return r
 
+    def server_info(self):
+        return self._req("GET", "/server/info", timeout=8).json()["result"]
+
     def list_history(self, limit=200):
         r = self._req("GET", "/server/history/list", params={"limit": limit, "order": "desc"})
         return r.json()["result"]["jobs"]

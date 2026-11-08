@@ -1,0 +1,15 @@
+services:
+  sample-identification-system:
+    build: .
+    container_name: sample-identification-system
+    restart: unless-stopped
+    ports:
+      - "8420:8420"
+    volumes:
+      - ./data:/data          # database, gcode archive and photos live here - back it up
+    environment:
+      # Printers are normally added in the web UI (Printers page). To pre-seed the first one:
+      # - SIS_MOONRAKER_URL=http://192.168.1.50:7125
+      # Address your phone should use in QR codes (otherwise whatever you browsed to):
+      # - SIS_PUBLIC_URL=http://myserver.local:8420
+      - SIS_POLL_SECONDS=30

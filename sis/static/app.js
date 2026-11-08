@@ -3,8 +3,9 @@ const $ = (s, el = document) => el.querySelector(s);
 const view = $("#view");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const selected = new Set();
-let filters = { q: "", result: "" };
+let filters = { q: "", result: "", printer: "" };
 let info = {};
+let printers = [];
 
 async function api(path, opts = {}) {
   if (opts.body && !(opts.body instanceof FormData)) {
@@ -68,6 +69,7 @@ async function listView(archived = false) {
   const rows = all.filter(s =>
     !!s.archived === archived &&
     !(hideUnrated && s.result === "unrated") &&
+    (!filters.printer || String(s.printer_id) === filters.printer) &&
     (!filters.result || s.result === filters.result) &&
     (!filters.q || [s.id, s.title, s.filename, s.notes, s.tags].join(" ").toLowerCase().includes(filters.q.toLowerCase())));
   view.innerHTML = `
@@ -77,6 +79,7 @@ async function listView(archived = false) {
       <input type="search" id="q" placeholder="Search number, name, notes, tags…" value="${esc(filters.q)}">
       <select id="rf"><option value="">All results</option>
         ${["unrated", "success", "fail"].map(r => `<option ${filters.result === r ? "selected" : ""}>${r}</option>`).join("")}</select>
+      ${printers.length > 1 ? `<select id="pf"><option value="">All printers</option>${printers.map(p => `<option value="${p.id}" ${filters.printer === String(p.id) ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>` : ""}
       ${archived ? "" : `<label class="muted"><input type="checkbox" id="hu" ${hideUnrated ? "checked" : ""}> Hide unrated</label>`}
       <span class="grow"></span>
       <button id="cmp" class="primary" disabled>Compare (<span id="n">0</span>)</button>
@@ -86,7 +89,7 @@ async function listView(archived = false) {
       <button id="exp">Export CSV</button>
     </div>
     <div class="card flush tablewrap"><table>
-      <thead><tr><th></th><th>#</th><th></th><th>Print</th><th>Result</th><th class="hide-m">Printed</th><th class="hide-m">Time</th></tr></thead>
+      <thead><tr><th></th><th>#</th><th></th><th>Print</th><th>Result</th>${printers.length > 1 ? '<th class="hide-m">Printer</th>' : ""}<th class="hide-m">Printed</th><th class="hide-m">Time</th></tr></thead>
       <tbody>${rows.map(s => `
         <tr class="click" data-id="${s.id}">
           <td><input type="checkbox" class="sel" data-id="${s.id}" ${selected.has(s.id) ? "checked" : ""} style="width:auto"></td>
@@ -95,6 +98,7 @@ async function listView(archived = false) {
           <td>${esc(s.title || s.filename.split("/").pop())}
             <div class="muted">${esc(s.tags)}${s.reprint_of ? ` · reprint of #${s.reprint_of}` : ""}${s.gcode_path ? "" : ' · <span class="b-warn">gcode not archived</span>'}</div></td>
           <td>${badge(s.result)}${s.moonraker_status && s.moonraker_status !== "completed" ? `<div class="muted">${esc(s.moonraker_status)}</div>` : ""}</td>
+          ${printers.length > 1 ? `<td class="hide-m muted">${esc(s.printer_name)}</td>` : ""}
           <td class="hide-m muted">${fmtDate(s.start_time)}</td>
           <td class="hide-m muted">${fmtDur(s.print_duration)}</td>
         </tr>`).join("") || `<tr><td colspan="7" class="muted">No samples yet. Finished prints appear here automatically.</td></tr>`}
@@ -103,6 +107,7 @@ async function listView(archived = false) {
   upd();
   $("#q").oninput = e => { filters.q = e.target.value; const p = e.target.selectionStart; listView(archived).then(() => { const q = $("#q"); q.focus(); q.setSelectionRange(p, p); }); };
   $("#rf").onchange = e => { filters.result = e.target.value; listView(archived); };
+  if ($("#pf")) $("#pf").onchange = e => { filters.printer = e.target.value; listView(archived); };
   if ($("#hu")) $("#hu").onchange = e => { store.set("hideUnrated", e.target.checked ? "1" : "0"); listView(archived); };
   $("#arc").onclick = async () => {
     const ids = [...selected];
@@ -148,7 +153,7 @@ async function detailView(id) {
     <div class="bar"><a href="#/" class="btn ghost">← All samples</a><span class="grow"></span>
       ${id > 1 ? `<a class="btn ghost" href="#/sample/${id - 1}">‹ #${id - 1}</a>` : ""}<a class="btn ghost" href="#/sample/${id + 1}">#${id + 1} ›</a></div>
     <h1>Sample #${s.id} ${badge(s.result)} ${s.archived ? '<span class="badge b-warn">archived</span>' : ""}</h1>
-    <div class="muted">${esc(s.filename)} · ${fmtDate(s.start_time)} · ${fmtDur(s.print_duration)}
+    <div class="muted">${s.printer_name ? esc(s.printer_name) + " · " : ""}${esc(s.filename)} ·${fmtDate(s.start_time)} · ${fmtDur(s.print_duration)}
       ${s.moonraker_status && s.moonraker_status !== "completed" ? ` · Moonraker: ${esc(s.moonraker_status)}` : ""}
       ${s.reprint_of ? ` · same gcode as <a href="#/sample/${s.reprint_of}">#${s.reprint_of}</a>` : ""}</div>
     <div class="grid2" style="margin-top:14px">
@@ -170,6 +175,7 @@ async function detailView(id) {
       </div>
       <div>
         <div class="card"><h2>Reprint / files</h2>
+          ${s.gcode_path && printers.length > 1 ? `<p><label class="muted">Print on printer</label><select id="rp">${printers.filter(p => p.enabled || p.id === s.printer_id).map(p => `<option value="${p.id}" ${p.id === s.printer_id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></p>` : ""}
           ${s.gcode_path ? `<div class="row"><button id="reprint" class="primary">▶ Reprint this gcode</button>
             <a class="btn" href="/api/samples/${id}/gcode">⬇ Download gcode</a></div>
             <p class="muted">Archived copy: ${esc(s.gcode_path)}. If the file was deleted from Moonraker it is re-uploaded first.</p>`
@@ -201,9 +207,11 @@ async function detailView(id) {
   };
   const reprint = $("#reprint");
   if (reprint) reprint.onclick = async () => {
-    if (!confirm(`Start printing sample #${id} (${s.filename}) now?`)) return;
+    const pid = $("#rp") ? +$("#rp").value : s.printer_id;
+    const pname = (printers.find(p => p.id === pid) || {}).name || "the printer";
+    if (!confirm(`Start printing sample #${id} (${s.filename}) on ${pname} now?`)) return;
     reprint.disabled = true;
-    try { const r = await api(`/samples/${id}/reprint`, { method: "POST" }); toast(`Started: ${r.started}${r.uploaded ? " (restored from archive)" : ""}`, 6000); }
+    try { const r = await api(`/samples/${id}/reprint`, { method: "POST", body: { printer_id: pid } }); toast(`Started on ${r.printer}: ${r.started}${r.uploaded ? " (uploaded from archive)" : ""}`, 6000); }
     catch (e) { toast("Reprint failed: " + e.message, 7000); }
     reprint.disabled = false;
   };
@@ -280,14 +288,69 @@ async function compareView(ids) {
   draw();
 }
 
+// -------------------------------------------------------------- printers
+const mainsailUrl = u => u.replace(/:\d+$/, "");   // Mainsail normally lives on port 80 of the same host
+
+async function printersView() {
+  const list = await api("/printers");
+  const ago = t => t ? new Date(t * 1000).toLocaleTimeString() : "never";
+  view.innerHTML = `
+    <h1>Printers</h1>
+    <p class="muted">Add any Moonraker printer reachable from this server. Finished prints from every printer land in one shared sample list.</p>
+    ${list.map(p => `<div class="card" data-id="${p.id}"><h2>${esc(p.name)} ${p.enabled ? "" : '<span class="badge b-warn">disabled</span>'}</h2>
+      <div class="row"><input class="pn" value="${esc(p.name)}" placeholder="Name"><input class="pu" value="${esc(p.url)}" placeholder="http://host:7125">
+        <input class="pk" type="password" placeholder="${p.has_key ? "API key saved (type to replace)" : "API key (optional)"}"></div>
+      <p class="${p.last_error ? "b-fail" : "muted"}">${p.last_error ? "⚠ " + esc(p.last_error) : `Last sync ${ago(p.last_sync)} · ${p.sample_count} samples`}</p>
+      <div class="row" style="justify-content:flex-start">
+        <button class="primary psave" style="flex:none">Save</button><button class="ptest" style="flex:none">Test connection</button>
+        <button class="ptoggle" style="flex:none">${p.enabled ? "Disable" : "Enable"}</button>
+        <a class="btn ghost" style="flex:none" target="_blank" rel="noopener" href="${esc(mainsailUrl(p.url))}">Open Mainsail ↗</a>
+        <button class="ghost bad pdel" style="flex:none">Remove</button></div></div>`).join("")}
+    <div class="card"><h2>Add a printer</h2>
+      <div class="row"><input id="an" placeholder="Name, e.g. Voron 2.4"><input id="au" placeholder="http://192.168.1.50:7125 or http://voron.local">
+        <input id="ak" type="password" placeholder="API key (optional)"></div>
+      <p class="muted">If Moonraker refuses the connection, add this server's IP to <code>trusted_clients</code> in the printer's moonraker.conf, or enter an API key.</p>
+      <button id="atest">Test connection</button> <button id="aadd" class="primary">Add printer</button></div>`;
+  const testing = async (body, btn) => {
+    btn.disabled = true;
+    try { const r = await api("/printers/test", { method: "POST", body }); toast(`Connected ✓ Klipper: ${r.klippy_state}, Moonraker ${r.moonraker_version}`, 5000); }
+    catch (e) { toast("Failed: " + e.message, 7000); }
+    btn.disabled = false;
+  };
+  $("#atest").onclick = e => testing({ url: $("#au").value }, e.target) && 0;
+  $("#aadd").onclick = async () => {
+    try {
+      await api("/printers", { method: "POST", body: { name: $("#an").value, url: $("#au").value, api_key: $("#ak").value } });
+      toast("Printer added"); await refreshInfo(); printersView();
+    } catch (e) { toast("Failed: " + e.message, 6000); }
+  };
+  view.querySelectorAll("[data-id]").forEach(card => {
+    const id = +card.dataset.id, p = list.find(x => x.id === id);
+    $(".psave", card).onclick = async () => {
+      const body = { name: $(".pn", card).value, url: $(".pu", card).value };
+      if ($(".pk", card).value) body.api_key = $(".pk", card).value;
+      try { await api("/printers/" + id, { method: "PATCH", body }); toast("Saved"); await refreshInfo(); printersView(); }
+      catch (e) { toast(e.message, 5000); }
+    };
+    $(".ptest", card).onclick = e => testing({ id, url: $(".pu", card).value, api_key: $(".pk", card).value }, e.target);
+    $(".ptoggle", card).onclick = async () => { await api("/printers/" + id, { method: "PATCH", body: { enabled: !p.enabled } }); await refreshInfo(); printersView(); };
+    $(".pdel", card).onclick = async () => {
+      if (!confirm(`Remove ${p.name}?`)) return;
+      try { await api("/printers/" + id, { method: "DELETE" }); await refreshInfo(); printersView(); }
+      catch (e) { toast(e.message, 7000); }
+    };
+  });
+}
+
 // ---------------------------------------------------------------- router
 async function route() {
   const [, kind, arg] = location.hash.split("/");
   window.scrollTo(0, 0);
   document.body.classList.remove("menu-open");
   document.querySelectorAll(".nav[data-nav]").forEach(a =>
-    a.classList.toggle("active", a.dataset.nav === (kind === "archive" ? "archive" : "samples")));
+    a.classList.toggle("active", a.dataset.nav === (kind === "archive" ? "archive" : kind === "printers" ? "printers" : "samples")));
   try {
+    if (kind === "printers") return await printersView();
     if (kind === "sample") await detailView(+arg);
     else if (kind === "compare") await compareView(arg);
     else if (kind === "archive") await listView(true);
@@ -299,7 +362,9 @@ async function refreshInfo() {
     info = await api("/info");
     const ls = info.last_sync;
     $("#syncinfo").textContent = ls.error ? "⚠ " + ls.error : ls.time ? "Synced " + new Date(ls.time * 1000).toLocaleTimeString() : "";
-    $("#mainsail").href = info.moonraker_url.replace(/:\d+$/, "").replace("localhost", location.hostname);
+    printers = info.printers;
+    const first = printers.find(p => p.enabled) || printers[0];
+    if (first) $("#mainsail").href = mainsailUrl(first.url).replace("localhost", location.hostname);
   } catch { }
 }
 $("#syncbtn").onclick = async e => {
@@ -311,4 +376,4 @@ $("#syncbtn").onclick = async e => {
 $("#menu").onclick = () => document.body.classList.toggle("menu-open");
 $("#scrim").onclick = () => document.body.classList.remove("menu-open");
 window.addEventListener("hashchange", route);
-refreshInfo(); route(); setInterval(refreshInfo, 30000);
+refreshInfo().then(route); setInterval(refreshInfo, 30000);

@@ -9,8 +9,8 @@ import segno
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
-from .moonraker import MoonrakerError
-from .service import Service
+from .moonraker import Moonraker, MoonrakerError
+from .service import Service, normalize_url
 
 RESULTS = ("unrated", "success", "fail")
 
@@ -29,7 +29,7 @@ KEY_SETTINGS = [
     "meta.estimated_time", "meta.filament_total", "meta.filament_name",
 ]
 
-CORE_COLS = ["sample", "result", "title", "tags", "notes", "filename", "reprint_of", "photos",
+CORE_COLS = ["sample", "printer", "result", "title", "tags", "notes", "filename", "reprint_of", "photos",
              "moonraker_status", "start_time", "print_minutes", "filament_used_mm", "gcode_archive"]
 
 
@@ -69,12 +69,15 @@ def create_app(cfg, service=None):
     # ---------------------------------------------------------------- info
     @app.get("/api/info")
     def info():
-        return jsonify(moonraker_url=cfg["moonraker_url"], last_sync=svc.last_sync,
+        return jsonify(printers=[{"id": p["id"], "name": p["name"], "url": p["url"], "enabled": bool(p["enabled"])}
+                                 for p in svc.db.list_printers()],
+                       last_sync=svc.last_sync,
                        next_number=(svc.db.one("SELECT COALESCE(MAX(id),0)+1 AS n FROM samples")["n"]))
 
     @app.post("/api/sync")
     def sync():
-        return jsonify(svc.sync_once())
+        only = request.args.get("printer", type=int)
+        return jsonify(svc.sync_once(only))
 
     # ------------------------------------------------------------- samples
     @app.get("/api/samples")
@@ -136,10 +139,79 @@ def create_app(cfg, service=None):
 
     @app.post("/api/samples/<int:sid>/reprint")
     def reprint(sid):
+        body = request.get_json(silent=True) or {}
         try:
-            return jsonify(svc.reprint(sid))
+            return jsonify(svc.reprint(sid, body.get("printer_id")))
         except MoonrakerError as e:
             return err(str(e), 502)
+
+    # ------------------------------------------------------------- printers
+    def printer_json(p):
+        out = {k: p[k] for k in ("id", "name", "url", "enabled", "last_sync", "last_error", "last_new",
+                                 "sample_count") if k in p}
+        out["enabled"] = bool(p["enabled"])
+        out["has_key"] = bool(p["api_key"])
+        return out
+
+    @app.get("/api/printers")
+    def printers():
+        return jsonify([printer_json(p) for p in svc.db.list_printers()])
+
+    @app.post("/api/printers/test")
+    def test_printer():
+        body = request.get_json(force=True) or {}
+        try:
+            url = normalize_url(body.get("url"))
+            key = body.get("api_key")
+            if not key and body.get("id"):                 # re-test a saved printer with its stored key
+                key = (svc.db.get_printer(int(body["id"])) or {}).get("api_key", "")
+            info = Moonraker(url, key or "").server_info()
+        except (ValueError, MoonrakerError) as e:
+            return err(str(e), 502)
+        return jsonify(ok=True, klippy_state=info.get("klippy_state"),
+                       moonraker_version=info.get("moonraker_version"), url=url)
+
+    @app.post("/api/printers")
+    def add_printer():
+        body = request.get_json(force=True) or {}
+        try:
+            url = normalize_url(body.get("url"))
+        except ValueError as e:
+            return err(str(e))
+        name = (body.get("name") or "").strip() or url.split("//", 1)[1].split(":")[0]
+        pid = svc.db.add_printer(name, url, body.get("api_key") or "")
+        svc.sync_once(pid)
+        return jsonify(printer_json(next(p for p in svc.db.list_printers() if p["id"] == pid)))
+
+    @app.patch("/api/printers/<int:pid>")
+    def patch_printer(pid):
+        if not svc.db.get_printer(pid):
+            abort(404)
+        body = request.get_json(force=True) or {}
+        f = {}
+        if "name" in body and str(body["name"]).strip():
+            f["name"] = str(body["name"]).strip()
+        if "url" in body:
+            try:
+                f["url"] = normalize_url(body["url"])
+            except ValueError as e:
+                return err(str(e))
+        if "api_key" in body:
+            f["api_key"] = body["api_key"] or ""
+        if "enabled" in body:
+            f["enabled"] = 1 if body["enabled"] else 0
+        svc.db.update_printer(pid, **f)
+        return jsonify(printer_json(next(p for p in svc.db.list_printers() if p["id"] == pid)))
+
+    @app.delete("/api/printers/<int:pid>")
+    def delete_printer(pid):
+        p = next((p for p in svc.db.list_printers() if p["id"] == pid), None)
+        if not p:
+            abort(404)
+        if p["sample_count"]:
+            return err(f"{p['name']} has {p['sample_count']} samples; disable it instead of deleting.", 409)
+        svc.db.x("DELETE FROM printers WHERE id=?", (pid,))
+        return jsonify(ok=True)
 
     # -------------------------------------------------------------- photos
     @app.post("/api/samples/<int:sid>/photos")
@@ -205,7 +277,7 @@ def create_app(cfg, service=None):
         rows = []
         for s in ss:
             row = {
-                "sample": s["id"], "result": s["result"], "title": s["title"], "tags": s["tags"],
+                "sample": s["id"], "printer": s["printer_name"] or "", "result": s["result"], "title": s["title"], "tags": s["tags"],
                 "notes": s["notes"], "filename": s["filename"], "reprint_of": s["reprint_of"] or "",
                 "photos": len(s["photos"]), "moonraker_status": s["moonraker_status"],
                 "start_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(s["start_time"]))
