@@ -6,7 +6,8 @@ USER_NAME="$(id -un)"
 
 if ! python3 -c "import ensurepip" 2>/dev/null; then
   echo "Installing python3-venv..."
-  sudo apt-get update -qq && sudo apt-get install -y python3-venv
+  sudo apt-get update -qq || echo "(apt update reported errors, e.g. a dead repo; continuing)"
+  sudo apt-get install -y python3-venv
 fi
 rm -rf "$DIR/.venv"
 python3 -m venv "$DIR/.venv"
