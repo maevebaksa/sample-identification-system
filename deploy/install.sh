@@ -4,13 +4,18 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 USER_NAME="$(id -un)"
 
-if ! python3 -c "import ensurepip" 2>/dev/null; then
-  echo "Installing python3-venv..."
-  sudo apt-get update -qq || echo "(apt update reported errors, e.g. a dead repo; continuing)"
-  sudo apt-get install -y python3-venv
-fi
 rm -rf "$DIR/.venv"
-python3 -m venv "$DIR/.venv"
+if python3 -c "import ensurepip" 2>/dev/null; then
+  python3 -m venv "$DIR/.venv"
+else
+  # No python3-venv and (on retired Debian releases) no working apt: bootstrap pip ourselves.
+  echo "python3-venv not available; creating venv without pip and fetching pip directly..."
+  python3 -m venv --without-pip "$DIR/.venv"
+  curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$DIR/.venv/get-pip.py" \
+    || curl -fsSL https://bootstrap.pypa.io/pip/3.9/get-pip.py -o "$DIR/.venv/get-pip.py"
+  "$DIR/.venv/bin/python" "$DIR/.venv/get-pip.py" -q
+  rm -f "$DIR/.venv/get-pip.py"
+fi
 "$DIR/.venv/bin/pip" install -q -r "$DIR/requirements.txt"
 [ -f "$DIR/config.json" ] || cp "$DIR/config.example.json" "$DIR/config.json"
 
