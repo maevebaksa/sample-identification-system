@@ -111,3 +111,21 @@ def test_file_already_deleted_before_sync(env):
     s = c.get("/api/samples/1").json
     assert s["gcode_path"] is None and s["archive_error"]
     assert c.post("/api/samples/1/reprint").status_code == 502
+
+
+def test_archive(env):
+    mock, app, c, tmp = env
+    t = time.time()
+    mock.add_job("1", "a.gcode", GCODE_A, start=t - 200)
+    mock.add_job("2", "b.gcode", GCODE_B, start=t - 100)
+    c.post("/api/sync")
+    c.patch("/api/samples/1", json={"result": "success"})
+    c.post("/api/samples/archive", json={"unrated": True})
+    rows = {r["id"]: r for r in c.get("/api/samples").json}
+    assert rows[1]["archived"] == 0 and rows[2]["archived"] == 1
+    assert "b.gcode" not in c.get("/api/export.csv").data.decode()      # excluded by default
+    c.post("/api/samples/archive", json={"ids": [2], "archived": False})
+    assert c.get("/api/samples/2").json["archived"] == 0
+    assert c.patch("/api/samples/1", json={"archived": True}).json["archived"] == 1
+    c.post("/api/sync")                                                  # archived stays archived, not re-imported
+    assert len(c.get("/api/samples").json) == 2

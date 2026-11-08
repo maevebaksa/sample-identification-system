@@ -3,18 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1e1e1e">
 <title>Sample Identification System</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header>
-  <a href="#/" class="brand">Samples</a>
-  <span id="syncinfo" class="muted"></span>
+<header class="appbar">
+  <button id="menu" class="icon" aria-label="Menu">☰</button>
+  <span class="title">Sample Identification System</span>
   <span class="grow"></span>
-  <button id="syncbtn" class="ghost">Sync now</button>
-  <a id="mainsail" class="ghost btn" target="_blank" rel="noopener">Mainsail ↗</a>
+  <span id="syncinfo" class="muted"></span>
 </header>
-<main id="view"></main>
+<div class="layout">
+  <nav id="drawer">
+    <a href="#/" class="nav" data-nav="samples"><span class="ic">▦</span> Samples</a>
+    <a href="#/archive" class="nav" data-nav="archive"><span class="ic">🗄</span> Archive</a>
+    <hr>
+    <a href="#" id="syncbtn" class="nav"><span class="ic">⟳</span> Sync now</a>
+    <a id="mainsail" class="nav" target="_blank" rel="noopener"><span class="ic">↗</span> Mainsail</a>
+  </nav>
+  <div id="scrim"></div>
+  <main id="view"></main>
+</div>
 <div id="toast"></div>
 <script src="/static/app.js"></script>
 </body>

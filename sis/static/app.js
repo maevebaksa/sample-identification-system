@@ -24,23 +24,68 @@ const fmtDate = t => t ? new Date(t * 1000).toLocaleString([], { dateStyle: "sho
 const fmtDur = s => { if (!s) return ""; const m = Math.round(s / 60); return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`; };
 const badge = r => `<span class="badge b-${r}">${r === "success" ? "✓ success" : r === "fail" ? "✗ failed" : "unrated"}</span>`;
 
+// ------------------------------------------------- settings grouping
+// First matching rule wins, so order matters. Keys are matched without their "meta."/"cura." prefix.
+const GROUPS = [
+  ["Print estimates", /^(estimated|object_height|layer_count|filament_total|filament_weight|size$|first_layer_(extr|bed)_temp|gcode_start|gcode_end|print_start|chamber_temp$)/, true],
+  ["Slicer & profile", /^(slicer|generated|.*settings_id$|.*_preset$|inherits|compatible_|printer_model|print_host|notes$|.*_vendor$)/],
+  ["G-code scripts", /(gcode|^start_|^end_|^before_|^toolchange|template|^machine_(start|end)|post_process|^between_objects)/],
+  ["Temperatures", /(temperature|_temp$|^temp|bed_temp|chamber|^standby)/],
+  ["Cooling & fan", /(fan|cool|slow_down|min_layer_time|^full_fan)/],
+  ["Speeds & acceleration", /(speed|accel|jerk|velocity|volumetric|^travel)/],
+  ["Retraction & pressure advance", /(retract|wipe|z_hop|lift|pressure_advance|^extra_length|^deretract)/],
+  ["Support, brim & skirt", /(support|brim|skirt|raft|adhesion|draft_shield|interface|^tree_)/],
+  ["Infill", /(fill|infill)/],
+  ["Walls & shells", /(perimeter|wall|shell|^top_|^bottom_|solid_|^thick_|overhang|^ensure_vertical|^only_one_perimeter)/],
+  ["Layers & quality", /(layer_height|^first_layer|layer_|resolution|^slice|elefant|xy_size|^xy_|seam|ironing|fuzzy|^arc|precise|^z_offset|^wall_gen|^gap_)/],
+  ["Filament & extrusion", /(filament|extrusion|flow|nozzle|material|density|diameter|^cost|extruder|width|^pellet|^spiral|^temperature_vitrification|^shrink)/],
+  ["Machine & bed", /(bed_|printable|machine|printer|kinematic|^max_|^min_|^gcode_flavor|^use_|thumbnail|host|^silent|^z_|^extra_|^single_extruder|^nozzle_|^cura\.)/],
+];
+const OTHER = "Other";
+function groupOf(key) {
+  const meta = key.startsWith("meta.");
+  const k = key.replace(/^(meta|cura)\./, "").toLowerCase();
+  for (const [name, re, metaOnly] of GROUPS) if ((!metaOnly || meta) && re.test(k)) return name;
+  return OTHER;
+}
+// [[groupName, [keys...]], ...] in display order, empty groups dropped.
+function groupedKeys(keys) {
+  const m = new Map([...GROUPS.map(g => g[0]), OTHER].map(n => [n, []]));
+  for (const k of keys) m.get(groupOf(k)).push(k);
+  return [...m].filter(([, v]) => v.length);
+}
+
 // ------------------------------------------------------------------ list
-async function listView() {
+const store = {
+  get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch { } },
+};
+
+async function listView(archived = false) {
   const all = await api("/samples");
+  const hideUnrated = !archived && store.get("hideUnrated", "0") === "1";
+  const nUnrated = all.filter(s => !s.archived && s.result === "unrated").length;
   const rows = all.filter(s =>
+    !!s.archived === archived &&
+    !(hideUnrated && s.result === "unrated") &&
     (!filters.result || s.result === filters.result) &&
     (!filters.q || [s.id, s.title, s.filename, s.notes, s.tags].join(" ").toLowerCase().includes(filters.q.toLowerCase())));
   view.innerHTML = `
+    <h1>${archived ? "Archive" : "Samples"}</h1>
+    ${archived ? `<p class="muted">Archived samples are hidden from the main list and from default exports. Their gcode and photos are kept.</p>` : ""}
     <div class="bar">
       <input type="search" id="q" placeholder="Search number, name, notes, tags…" value="${esc(filters.q)}">
       <select id="rf"><option value="">All results</option>
         ${["unrated", "success", "fail"].map(r => `<option ${filters.result === r ? "selected" : ""}>${r}</option>`).join("")}</select>
+      ${archived ? "" : `<label class="muted"><input type="checkbox" id="hu" ${hideUnrated ? "checked" : ""}> Hide unrated</label>`}
       <span class="grow"></span>
       <button id="cmp" class="primary" disabled>Compare (<span id="n">0</span>)</button>
       <button id="lbl" disabled>Labels</button>
+      <button id="arc" disabled>${archived ? "Restore" : "Archive"} selected</button>
+      ${archived || !nUnrated ? "" : `<button id="arcu">Archive all unrated (${nUnrated})</button>`}
       <button id="exp">Export CSV</button>
     </div>
-    <div class="card tablewrap"><table>
+    <div class="card flush tablewrap"><table>
       <thead><tr><th></th><th>#</th><th></th><th>Print</th><th>Result</th><th class="hide-m">Printed</th><th class="hide-m">Time</th></tr></thead>
       <tbody>${rows.map(s => `
         <tr class="click" data-id="${s.id}">
@@ -54,10 +99,21 @@ async function listView() {
           <td class="hide-m muted">${fmtDur(s.print_duration)}</td>
         </tr>`).join("") || `<tr><td colspan="7" class="muted">No samples yet. Finished prints appear here automatically.</td></tr>`}
       </tbody></table></div>`;
-  const upd = () => { $("#n").textContent = selected.size; $("#cmp").disabled = selected.size < 2; $("#lbl").disabled = !selected.size; };
+  const upd = () => { $("#n").textContent = selected.size; $("#cmp").disabled = selected.size < 2; $("#lbl").disabled = !selected.size; $("#arc").disabled = !selected.size; };
   upd();
-  $("#q").oninput = e => { filters.q = e.target.value; const p = e.target.selectionStart; listView().then(() => { const q = $("#q"); q.focus(); q.setSelectionRange(p, p); }); };
-  $("#rf").onchange = e => { filters.result = e.target.value; listView(); };
+  $("#q").oninput = e => { filters.q = e.target.value; const p = e.target.selectionStart; listView(archived).then(() => { const q = $("#q"); q.focus(); q.setSelectionRange(p, p); }); };
+  $("#rf").onchange = e => { filters.result = e.target.value; listView(archived); };
+  if ($("#hu")) $("#hu").onchange = e => { store.set("hideUnrated", e.target.checked ? "1" : "0"); listView(archived); };
+  $("#arc").onclick = async () => {
+    const ids = [...selected];
+    await api("/samples/archive", { method: "POST", body: { ids, archived: !archived } });
+    selected.clear(); toast(`${ids.length} sample(s) ${archived ? "restored" : "archived"}`); listView(archived);
+  };
+  if ($("#arcu")) $("#arcu").onclick = async () => {
+    if (!confirm(`Move all ${nUnrated} unrated samples to the Archive? You can restore them later.`)) return;
+    await api("/samples/archive", { method: "POST", body: { unrated: true, archived: true } });
+    selected.clear(); toast("Unrated samples archived"); listView(archived);
+  };
   view.querySelectorAll("tr.click").forEach(tr => tr.onclick = e => {
     if (e.target.classList.contains("sel")) {
       const id = +e.target.dataset.id; e.target.checked ? selected.add(id) : selected.delete(id); upd(); return;
@@ -91,7 +147,7 @@ async function detailView(id) {
   view.innerHTML = `
     <div class="bar"><a href="#/" class="btn ghost">← All samples</a><span class="grow"></span>
       ${id > 1 ? `<a class="btn ghost" href="#/sample/${id - 1}">‹ #${id - 1}</a>` : ""}<a class="btn ghost" href="#/sample/${id + 1}">#${id + 1} ›</a></div>
-    <h1>Sample #${s.id} ${badge(s.result)}</h1>
+    <h1>Sample #${s.id} ${badge(s.result)} ${s.archived ? '<span class="badge b-warn">archived</span>' : ""}</h1>
     <div class="muted">${esc(s.filename)} · ${fmtDate(s.start_time)} · ${fmtDur(s.print_duration)}
       ${s.moonraker_status && s.moonraker_status !== "completed" ? ` · Moonraker: ${esc(s.moonraker_status)}` : ""}
       ${s.reprint_of ? ` · same gcode as <a href="#/sample/${s.reprint_of}">#${s.reprint_of}</a>` : ""}</div>
@@ -127,8 +183,12 @@ async function detailView(id) {
     </div>
     <div class="card"><h2>Settings (${keys.length})</h2>
       <input type="search" id="sf" placeholder="Filter settings…" style="max-width:300px;margin-bottom:8px">
-      <div class="tablewrap"><table class="kv" id="stab">${keys.map(k => `<tr><td>${esc(k)}</td><td class="val">${esc(s.settings[k])}</td></tr>`).join("")}</table></div>
-      <p><button id="del" class="ghost bad">Delete sample record</button>
+      <div id="stab">${groupedKeys(keys).map(([g, ks], i) => `
+        <details class="grp" ${i < 5 ? "open" : ""}><summary>${esc(g)} <span class="muted">(${ks.length})</span></summary>
+          <div class="tablewrap"><table class="kv">${ks.map(k => `<tr><td>${esc(k.replace(/^meta\./, ""))}${k.startsWith("meta.") ? ' <span class="muted">· moonraker</span>' : ""}</td><td class="val">${esc(s.settings[k])}</td></tr>`).join("")}</table></div>
+        </details>`).join("")}</div>
+      <p><button id="archv">${s.archived ? "Restore from archive" : "Move to archive"}</button>
+      <button id="del" class="ghost bad">Delete sample record</button>
       <span class="muted">(archived gcode stays on disk)</span></p></div>`;
   fetch(`/api/samples/${id}/qr.svg`).then(r => r.text()).then(t => $("#qr").innerHTML = `<span class="qr">${t}</span>`);
   view.querySelectorAll("[data-r]").forEach(b => b.onclick = async () => {
@@ -159,7 +219,19 @@ async function detailView(id) {
   view.querySelectorAll(".photos .x").forEach(b => b.onclick = async () => {
     if (confirm("Delete this photo?")) { await api("/photos/" + b.dataset.p, { method: "DELETE" }); detailView(id); }
   });
-  $("#sf").oninput = e => { const q = e.target.value.toLowerCase(); $("#stab").querySelectorAll("tr").forEach(tr => tr.style.display = tr.textContent.toLowerCase().includes(q) ? "" : "none"); };
+  $("#sf").oninput = e => {
+    const q = e.target.value.toLowerCase();
+    $("#stab").querySelectorAll("details").forEach(d => {
+      let shown = 0;
+      d.querySelectorAll("tr").forEach(tr => { const on = tr.textContent.toLowerCase().includes(q); tr.style.display = on ? "" : "none"; shown += on; });
+      d.style.display = shown ? "" : "none";
+      if (q && shown) d.open = true;
+    });
+  };
+  $("#archv").onclick = async () => {
+    await api("/samples/" + id, { method: "PATCH", body: { archived: !s.archived } });
+    toast(s.archived ? "Restored" : "Moved to archive"); detailView(id);
+  };
   $("#del").onclick = async () => { if (confirm(`Delete record for sample #${id}? Photos are removed; the archived gcode is kept.`)) { await api("/samples/" + id, { method: "DELETE" }); location.hash = "#/"; } };
 }
 
@@ -194,8 +266,13 @@ async function compareView(ids) {
         <tbody>
           <tr><td class="muted">Photo</td>${d.samples.map(s => `<td>${s.photos.length ? `<a href="#/sample/${s.id}"><img class="thumb" style="width:90px;height:90px" src="/photos/${esc(s.photos[s.photos.length - 1].filename)}"></a>` : ""}</td>`).join("")}</tr>
           <tr><td class="muted">Notes</td>${d.samples.map(s => `<td>${esc(s.notes)}</td>`).join("")}</tr>
-          ${rows.map(r => `<tr class="${r.differs ? "diff" : ""}"><td class="muted" style="word-break:break-all">${esc(r.key)}</td>
-            ${r.values.map(v => `<td class="val">${v === null ? '<span class="muted">—</span>' : esc(v)}</td>`).join("")}</tr>`).join("")}
+          ${(() => {
+            const byKey = new Map(rows.map(r => [r.key, r]));
+            return groupedKeys([...byKey.keys()]).map(([g, ks]) => `
+              <tr class="grphead"><td colspan="${d.samples.length + 1}">${esc(g)} <span class="muted">· ${ks.filter(k => byKey.get(k).differs).length} differ / ${ks.length}</span></td></tr>
+              ${ks.map(k => { const r = byKey.get(k); return `<tr class="${r.differs ? "diff" : ""}"><td class="muted" style="word-break:break-all">${esc(k.replace(/^meta\./, ""))}</td>
+                ${r.values.map(v => `<td class="val">${v === null ? '<span class="muted">—</span>' : esc(v)}</td>`).join("")}</tr>`; }).join("")}`).join("");
+          })()}
         </tbody></table></div>`;
     $("#od").onchange = e => { onlyDiff = e.target.checked; draw(); };
     $("#ex").onclick = () => location.href = `/api/export.csv?ids=${ids}&settings=all`;
@@ -207,9 +284,13 @@ async function compareView(ids) {
 async function route() {
   const [, kind, arg] = location.hash.split("/");
   window.scrollTo(0, 0);
+  document.body.classList.remove("menu-open");
+  document.querySelectorAll(".nav[data-nav]").forEach(a =>
+    a.classList.toggle("active", a.dataset.nav === (kind === "archive" ? "archive" : "samples")));
   try {
     if (kind === "sample") await detailView(+arg);
     else if (kind === "compare") await compareView(arg);
+    else if (kind === "archive") await listView(true);
     else await listView();
   } catch (e) { view.innerHTML = `<div class="card b-fail">Error: ${esc(e.message)}</div>`; }
 }
@@ -221,11 +302,13 @@ async function refreshInfo() {
     $("#mainsail").href = info.moonraker_url.replace(/:\d+$/, "").replace("localhost", location.hostname);
   } catch { }
 }
-$("#syncbtn").onclick = async () => {
-  $("#syncbtn").disabled = true;
+$("#syncbtn").onclick = async e => {
+  e.preventDefault();
   const r = await api("/sync", { method: "POST" });
   toast(r.error ? "Sync error: " + r.error : r.new ? `${r.new} new sample(s)` : "Up to date");
-  $("#syncbtn").disabled = false; refreshInfo(); route();
+  refreshInfo(); route();
 };
+$("#menu").onclick = () => document.body.classList.toggle("menu-open");
+$("#scrim").onclick = () => document.body.classList.remove("menu-open");
 window.addEventListener("hashchange", route);
 refreshInfo(); route(); setInterval(refreshInfo, 30000);

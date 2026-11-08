@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS samples (
     gcode_sha256 TEXT,
     reprint_of INTEGER,                        -- earlier sample with identical gcode
     result TEXT NOT NULL DEFAULT 'unrated',    -- unrated | success | fail
+    archived INTEGER NOT NULL DEFAULT 0,       -- 1 = hidden in the Archive (sample no longer exists)
     moonraker_status TEXT,
     start_time REAL, end_time REAL,
     print_duration REAL, total_duration REAL, filament_used REAL,
@@ -40,6 +41,10 @@ class DB:
         self.lock = threading.RLock()
         with self.lock:
             self.conn.executescript(SCHEMA)
+            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(samples)")}
+            if "archived" not in cols:   # migrate databases created by v0.1.0
+                self.conn.execute("ALTER TABLE samples ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+                self.conn.commit()
 
     def q(self, sql, args=()):
         with self.lock:

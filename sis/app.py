@@ -40,6 +40,13 @@ def create_app(cfg, service=None):
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
     app.svc = svc
 
+    @app.after_request
+    def no_stale_ui(resp):
+        # Always revalidate the UI files so updates show up without a hard refresh.
+        if request.path == "/" or request.path.startswith("/static/"):
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
     def err(msg, code=400):
         return jsonify(error=msg), code
 
@@ -91,11 +98,27 @@ def create_app(cfg, service=None):
             if body["result"] not in RESULTS:
                 return err("result must be one of " + ", ".join(RESULTS))
             fields["result"] = body["result"]
+        if "archived" in body:
+            fields["archived"] = 1 if body["archived"] else 0
         for k in ("title", "notes", "tags"):
             if k in body:
                 fields[k] = str(body[k])[:5000]
         svc.db.update_sample(sid, **fields)
         return jsonify(svc.db.get_sample(sid))
+
+    @app.post("/api/samples/archive")
+    def bulk_archive():
+        """{ids:[...], archived:true|false}  or  {unrated:true} to archive every unrated sample."""
+        body = request.get_json(force=True) or {}
+        flag = 1 if body.get("archived", True) else 0
+        if body.get("unrated"):
+            svc.db.x("UPDATE samples SET archived=? WHERE result='unrated' AND archived<>?", (flag, flag))
+        else:
+            ids = [int(i) for i in body.get("ids", [])]
+            if ids:
+                svc.db.x(f"UPDATE samples SET archived=? WHERE id IN ({','.join('?' * len(ids))})",
+                         (flag, *ids))
+        return jsonify(ok=True)
 
     @app.delete("/api/samples/<int:sid>")
     def delete_sample(sid):
@@ -170,7 +193,7 @@ def create_app(cfg, service=None):
     # -------------------------------------------------------------- export
     def export_rows(ids, mode):
         ss = [svc.db.get_sample(i) for i in ids] if ids else \
-            [svc.db.get_sample(r["id"]) for r in reversed(svc.db.list_samples())]
+            [svc.db.get_sample(r["id"]) for r in reversed(svc.db.list_samples()) if not r["archived"]]
         ss = [s for s in ss if s]
         if mode == "all":
             keys = sorted({k for s in ss for k in s["settings"]})
@@ -211,7 +234,7 @@ def create_app(cfg, service=None):
     def export_json():
         ids = parse_ids()
         out = [svc.db.get_sample(i) for i in ids] if ids else \
-            [svc.db.get_sample(r["id"]) for r in reversed(svc.db.list_samples())]
+            [svc.db.get_sample(r["id"]) for r in reversed(svc.db.list_samples()) if not r["archived"]]
         return Response(json.dumps([s for s in out if s], indent=2), mimetype="application/json",
                         headers={"Content-Disposition": "attachment; filename=samples.json"})
 

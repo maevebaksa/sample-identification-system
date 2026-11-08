@@ -7,6 +7,8 @@ A companion app for **Mainsail + Moonraker** that keeps a permanent record of yo
 - **Safe copy** – every gcode is copied to `data_dir/gcodes/`, so deleting it from Mainsail loses nothing.
 - **One-tap reprint** – re-uploads the archived file if it's gone from Mainsail, then starts it.
 - **Success / fail**, title, tags and notes per sample.
+- **Archive** – hide unrated/old samples you no longer have (restorable, excluded from default exports).
+- **Grouped settings** – temperatures, speeds, infill, walls, cooling, retraction, etc. instead of one long list.
 - **Compare** any number of samples side by side, differing settings highlighted.
 - **Export** CSV (results + key settings, or every setting) or full JSON.
 - **Phone photos** – scan the QR code (or open the sample on your phone) and tap *Take photo*.
@@ -50,7 +52,7 @@ Mainsail supports custom sidebar entries via `.theme/navi.json` in your printer'
 (`~/printer_data/config/.theme/navi.json`). `deploy/install.sh` prints the snippet; it looks like:
 
 ```json
-[{"title": "Samples", "href": "http://<printer-address>:8420", "target": "_blank", "position": 90,
+[{"title": "Sample Identification System", "href": "http://<printer-address>:8420", "target": "_blank", "position": 90,
   "icon": "M12,2L1,21H23M12,6L19.5,19H4.5"}]
 ```
 

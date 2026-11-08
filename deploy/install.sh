@@ -31,6 +31,6 @@ echo "Running at http://$HOST:8420"
 echo
 echo "To add a 'Samples' link in Mainsail, save this as ~/printer_data/config/.theme/navi.json:"
 cat <<EOF
-[{"title": "Samples", "href": "http://$HOST:8420", "target": "_blank", "position": 90,
+[{"title": "Sample Identification System", "href": "http://$HOST:8420", "target": "_blank", "position": 90,
   "icon": "M12,2L1,21H23M12,6L19.5,19H4.5"}]
 EOF
